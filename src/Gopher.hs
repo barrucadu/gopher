@@ -7,12 +7,11 @@ import Data.ByteString (ByteString, hPut)
 import qualified Data.ByteString as B
 import Data.Char (toLower)
 import Data.List (isPrefixOf)
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Network
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, isSymbolicLink)
+import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath ((</>), joinPath, takeExtension)
 import System.IO (hClose, hGetChar, hPutStr)
-import System.Posix.Files (readSymbolicLink)
 import Text.Read (readMaybe)
 
 data Response
@@ -89,17 +88,15 @@ defaultServe selector =
       path = joinPath segments
   in if any ("." `isPrefixOf`) segments
      then pure Nothing
-          else servePath path path
+          else servePath path =<< canonicalizePath path
   where
-    servePath orig "" = serveDir orig ""
     servePath orig path = getPathType path >>= \case
-      Just (Symbolic path') -> servePath orig path'
       Just File      -> serveFile path
       Just Directory -> serveDir  orig path
       Nothing -> pure Nothing
 
     serveFile path
-      | getTypeByExtension (map toLower $ takeExtension path) == '0' = Just . Text <$> readFile path
+      | getTypeByExtension path == '0' = Just . Text <$> readFile path
       | otherwise = Just . Binary <$> B.readFile path
 
     serveDir orig path = do
@@ -108,14 +105,7 @@ defaultServe selector =
       gopherExists <- doesFileExist gopherPath
       if gopherExists
       then Just . DirListing <$> dirFile gopherPath
-      else Just . DirListing . mapMaybe (dirEntry orig) <$> listDirectory dirPath
-
-    dirEntry _ ('.':_) = Nothing
-    dirEntry path fname =
-      let ext = map toLower (takeExtension fname)
-          sel = path </> fname
-          ty = getTypeByExtension ext
-      in Just (DirEntry ty fname sel Nothing Nothing)
+      else Just . DirListing <$> dirList orig dirPath
 
 -- | Read a directory listing file.
 dirFile :: FilePath -> IO [DirEntry]
@@ -132,6 +122,16 @@ dirFile fp = mapMaybe dirEntry . lines <$> readFile fp where
       | ty == 'i' -> Just (DirEntry ty s "" Nothing Nothing)
       | otherwise -> Nothing
 
+-- | Produce a Gopher directory listing for a path, using the given
+-- \"base selector\" for generated selectors. This omits hidden files.
+dirList :: FilePath -> FilePath -> IO [DirEntry]
+dirList base fp = fmap catMaybes . mapM dirEntry =<< listDirectory fp where
+  dirEntry ('.':_) = pure Nothing
+  dirEntry file = canonicalizePath (fp </> file) >>= getPathType >>= \case
+    Just File      -> pure . Just $ DirEntry (getTypeByExtension file) file (base </> file) Nothing Nothing
+    Just Directory -> pure . Just $ DirEntry '1' file (base </> file) Nothing Nothing
+    Nothing -> pure Nothing
+
 -- | Split a string by a delimiter. It never ceases to amaze me that
 -- this isn't standard.
 splitBy :: Char -> String -> [String]
@@ -141,8 +141,8 @@ splitBy delim s = case dropWhile (==delim) s of
         in w : splitBy delim s''
 
 -- | Get the type of a file by its extension.
-getTypeByExtension :: String -> Char
-getTypeByExtension ext
+getTypeByExtension :: FilePath -> Char
+getTypeByExtension fp
   | ext `elem` textFileExts = '0'
   | ext == ".gif" = 'g'
   | ext == ".html" = 'h'
@@ -151,22 +151,21 @@ getTypeByExtension ext
   | otherwise = '9'
 
   where
+    ext = map toLower (takeExtension fp)
     textFileExts  = [".css", ".md", ".markdown", ".rst", ".txt"]
     imageFileExts = [".bmp", ".jpg", ".jpeg", ".png", ".svg", ".tiff", ".webp"]
     audioFileExts = [".flac", ".m4a", ".mp3", ".ogg", ".wav"]
 
-data PathType = Symbolic FilePath | Directory | File
+data PathType = Directory | File
   deriving Show
 
 -- | Get the type of a file.
 getPathType :: FilePath -> IO (Maybe PathType)
 getPathType path = do
-  isSymLink <- isSymbolicLink     path
   isFile    <- doesFileExist      path
   isDir     <- doesDirectoryExist path
 
-  case (isSymLink, isFile, isDir) of
-    (True, _, _) -> Just . Symbolic <$> readSymbolicLink path
-    (_, True, _) -> pure (Just File)
-    (_, _, True) -> pure (Just Directory)
+  case (isFile, isDir) of
+    (True, _) -> pure (Just File)
+    (_, True) -> pure (Just Directory)
     _ -> pure Nothing
