@@ -24,9 +24,10 @@ data DirEntry = DirEntry
   deriving Show
 
 -- | Run a Gopher server with the given host and port.
-gopher :: HostName -> PortNumber -> (String -> IO (Maybe Response)) -> IO ()
-gopher host port handle = do
+gopher :: HostName -> PortNumber -> (String -> IO (Maybe Response)) -> IO () -> IO ()
+gopher host port handle afterConnect = do
   sock <- listenOn (PortNumber port)
+  afterConnect
   forever (forkIO . serve =<< accept sock)
 
   where
