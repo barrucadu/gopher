@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Gopher where
 
 import Control.Concurrent
@@ -8,9 +9,10 @@ import Data.Char (toLower)
 import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Network
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory, isSymbolicLink)
 import System.FilePath ((</>), joinPath, takeExtension)
 import System.IO (hClose, hGetChar, hPutStr)
+import System.Posix.Files (readSymbolicLink)
 import Text.Read (readMaybe)
 
 data Response
@@ -77,39 +79,36 @@ gopher host port handle afterConnect = do
 --
 -- Leading slashes are stripped, and the path is interpreted as a
 -- filesystem path relative to the current working directory (with
--- accessing hidden files/directories forbidden). If it's a directory
--- and a \".gopher\" file exists in that directory, it is served;
--- otherwise a directory listing is generated (which excludes hidden
--- files).
+-- accessing hidden files/directories forbidden, and symlinks
+-- followed). If it's a directory and a \".gopher\" file exists in
+-- that directory, it is served; otherwise a directory listing is
+-- generated (which excludes hidden files).
 defaultServe :: String -> IO (Maybe Response)
 defaultServe selector =
   let segments = splitBy '/' selector
+      path = joinPath segments
   in if any ("." `isPrefixOf`) segments
      then pure Nothing
-          else servePath (joinPath segments)
+          else servePath path path
   where
-    servePath "" = serveDir ""
-    servePath path = do
-      fileExists <- doesFileExist      path
-      dirExists  <- doesDirectoryExist path
-
-      if fileExists
-      then serveFile path
-      else if dirExists
-           then serveDir path
-           else pure Nothing
+    servePath orig "" = serveDir orig ""
+    servePath orig path = getPathType path >>= \case
+      Just (Symbolic path') -> servePath orig path'
+      Just File      -> serveFile path
+      Just Directory -> serveDir  orig path
+      Nothing -> pure Nothing
 
     serveFile path
       | getTypeByExtension (map toLower $ takeExtension path) == '0' = Just . Text <$> readFile path
       | otherwise = Just . Binary <$> B.readFile path
 
-    serveDir path = do
+    serveDir orig path = do
       let dirPath = "." </> path
       let gopherPath = dirPath </> ".gopher"
       gopherExists <- doesFileExist gopherPath
       if gopherExists
       then Just . DirListing <$> dirFile gopherPath
-      else Just . DirListing . mapMaybe (dirEntry path) <$> listDirectory dirPath
+      else Just . DirListing . mapMaybe (dirEntry orig) <$> listDirectory dirPath
 
     dirEntry _ ('.':_) = Nothing
     dirEntry path fname =
@@ -152,6 +151,22 @@ getTypeByExtension ext
   | otherwise = '9'
 
   where
-    textFileExts  = [".txt", ".md", ".markdown", ".rst"]
+    textFileExts  = [".css", ".md", ".markdown", ".rst", ".txt"]
     imageFileExts = [".bmp", ".jpg", ".jpeg", ".png", ".svg", ".tiff", ".webp"]
     audioFileExts = [".flac", ".m4a", ".mp3", ".ogg", ".wav"]
+
+data PathType = Symbolic FilePath | Directory | File
+  deriving Show
+
+-- | Get the type of a file.
+getPathType :: FilePath -> IO (Maybe PathType)
+getPathType path = do
+  isSymLink <- isSymbolicLink     path
+  isFile    <- doesFileExist      path
+  isDir     <- doesDirectoryExist path
+
+  case (isSymLink, isFile, isDir) of
+    (True, _, _) -> Just . Symbolic <$> readSymbolicLink path
+    (_, True, _) -> pure (Just File)
+    (_, _, True) -> pure (Just Directory)
+    _ -> pure Nothing
