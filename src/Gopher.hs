@@ -55,13 +55,13 @@ gopher host port handle = do
     textEntry l@('.':_) = '.':l
     textEntry l = l
 
-    -- A selector runs up to a \r or a \t, whichever comes first.
+    -- A selector runs up to a \r, \n, or a \t, whichever comes first.
     hGetSelector h = go (1024::Int) where
       -- Character limit.
       go 0 = pure ""
       go n = do
         c <- hGetChar h
-        if c == '\r' || c == '\t'
+        if c `elem` "\t\r\n"
           then pure ""
           else (c:) <$> go (n-1)
 
