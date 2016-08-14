@@ -3,8 +3,13 @@ module Gopher where
 import Control.Concurrent
 import Control.Monad
 import Data.ByteString (ByteString, hPut)
+import qualified Data.ByteString as B
+import Data.Char (toLower)
+import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Network
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.FilePath ((</>), joinPath, takeExtension)
 import System.IO (hClose, hGetChar, hPutStr)
 import Text.Read (readMaybe)
 
@@ -68,6 +73,51 @@ gopher host port handle afterConnect = do
 
     hPutLn h s = hPutStr h s >> hPutStr h "\r\n"
 
+-- | A sensible default request handler.
+--
+-- Leading slashes are stripped, and the path is interpreted as a
+-- filesystem path relative to the current working directory (with
+-- accessing hidden files/directories forbidden). If it's a directory
+-- and a \".gopher\" file exists in that directory, it is served;
+-- otherwise a directory listing is generated (which excludes hidden
+-- files).
+defaultServe :: String -> IO (Maybe Response)
+defaultServe selector =
+  let segments = splitBy '/' selector
+  in if any ("." `isPrefixOf`) segments
+     then pure Nothing
+          else servePath (joinPath segments)
+  where
+    servePath "" = serveDir ""
+    servePath path = do
+      fileExists <- doesFileExist      path
+      dirExists  <- doesDirectoryExist path
+
+      if fileExists
+      then serveFile path
+      else if dirExists
+           then serveDir path
+           else pure Nothing
+
+    serveFile path
+      | getTypeByExtension (map toLower $ takeExtension path) == '0' = Just . Text <$> readFile path
+      | otherwise = Just . Binary <$> B.readFile path
+
+    serveDir path = do
+      let dirPath = "." </> path
+      let gopherPath = dirPath </> ".gopher"
+      gopherExists <- doesFileExist gopherPath
+      if gopherExists
+      then Just . DirListing <$> dirFile gopherPath
+      else Just . DirListing . mapMaybe (dirEntry path) <$> listDirectory dirPath
+
+    dirEntry _ ('.':_) = Nothing
+    dirEntry path fname =
+      let ext = map toLower (takeExtension fname)
+          sel = path </> fname
+          ty = getTypeByExtension ext
+      in Just (DirEntry ty fname sel Nothing Nothing)
+
 -- | Read a directory listing file.
 dirFile :: FilePath -> IO [DirEntry]
 dirFile fp = mapMaybe dirEntry . lines <$> readFile fp where
@@ -90,3 +140,18 @@ splitBy delim s = case dropWhile (==delim) s of
   "" -> []
   s' -> let (w, s'') = break (==delim) s'
         in w : splitBy delim s''
+
+-- | Get the type of a file by its extension.
+getTypeByExtension :: String -> Char
+getTypeByExtension ext
+  | ext `elem` textFileExts = '0'
+  | ext == ".gif" = 'g'
+  | ext == ".html" = 'h'
+  | ext `elem` imageFileExts = 'I'
+  | ext `elem` audioFileExts = 's'
+  | otherwise = '9'
+
+  where
+    textFileExts  = [".txt", ".md", ".markdown", ".rst"]
+    imageFileExts = [".bmp", ".jpg", ".jpeg", ".png", ".svg", ".tiff", ".webp"]
+    audioFileExts = [".flac", ".m4a", ".mp3", ".ogg", ".wav"]
