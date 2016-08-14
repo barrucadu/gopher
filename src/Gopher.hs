@@ -46,7 +46,7 @@ gopher host port handle afterConnect = do
           mapM_ (hPutLn h . dirEntry) entries
           hPutLn h "."
         Just (Text str) -> do
-          mapM_ (hPutLn h . textEntry) (lines str)
+          mapM_ (hPutLn h) (lines str)
           hPutLn h "."
         Just (Binary bs) -> hPut h bs
         Nothing -> pure ()
@@ -57,10 +57,6 @@ gopher host port handle afterConnect = do
                             , fromMaybe host (eHost entry), "\t"
                             , show $ fromMaybe port (ePort entry)
                             ]
-
-    -- A line starting with a '.' gets prefixed with another '.', to avoid early connection termination by the client.
-    textEntry l@('.':_) = '.':l
-    textEntry l = l
 
     -- A selector runs up to a \r, \n, or a \t, whichever comes first.
     hGetSelector h = go (1024::Int) where
