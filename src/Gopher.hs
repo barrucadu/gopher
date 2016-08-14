@@ -148,7 +148,7 @@ getTypeByExtension fp
 
   where
     ext = map toLower (takeExtension fp)
-    textFileExts  = [".css", ".md", ".markdown", ".rst", ".txt"]
+    textFileExts  = [".css", ".js", ".md", ".markdown", ".rst", ".txt"]
     imageFileExts = [".bmp", ".jpg", ".jpeg", ".png", ".svg", ".tiff", ".webp"]
     audioFileExts = [".flac", ".m4a", ".mp3", ".ogg", ".wav"]
 
